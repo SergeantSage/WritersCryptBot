@@ -36,7 +36,6 @@ const WELCOME_CHANNEL_ID = process.env.WELCOME_CHANNEL_ID;
 const WELCOME_BANNER_URL = process.env.WELCOME_BANNER_URL;
 
 const CHAT_CHANNEL_ID = process.env.CHAT_CHANNEL_ID;
-
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
 
@@ -209,8 +208,39 @@ function splitMessage(text, maxLength = 1900) {
 }
 
 // ================================
-// AI CHAT SYSTEM - GOOGLE GEMINI
+// AI CHAT SYSTEM
 // ================================
+
+// Automatically retry temporary Gemini errors.
+
+async function generateWithRetry(request) {
+    const retryDelays = [1500, 3000, 6000];
+
+    for (let attempt = 0; ; attempt++) {
+        try {
+            return await gemini.models.generateContent(request);
+        } catch (error) {
+            const status = Number(error?.status || error?.code);
+            const errorText = String(error?.message || '');
+
+            const isTemporary =
+                [429, 500, 502, 503, 504].includes(status) ||
+                /UNAVAILABLE|RESOURCE_EXHAUSTED|INTERNAL|high demand|temporarily unavailable/i.test(errorText);
+
+            if (!isTemporary || attempt >= retryDelays.length) {
+                throw error;
+            }
+
+            const delay = retryDelays[attempt];
+
+            console.warn(
+                `Gemini temporarily unavailable (attempt ${attempt + 1}/${retryDelays.length + 1}). Retrying in ${delay / 1000} seconds...`
+            );
+
+            await new Promise(resolve => setTimeout(resolve, delay));
+        }
+    }
+}
 
 async function sendGiselleReply(message, responseText) {
     const chunks = splitMessage(responseText);
@@ -257,7 +287,7 @@ client.on(Events.MessageCreate, async message => {
         if (!message.guild) return;
 
         if (!gemini) {
-            console.error('GEMINI_API_KEY is missing or Gemini client is not initialized!');
+            console.error('GEMINI_API_KEY is missing or Gemini failed to initialize!');
             return;
         }
 
@@ -314,13 +344,13 @@ client.on(Events.MessageCreate, async message => {
                 }
             ];
 
-            // Convert conversation history to Gemini format.
             const geminiContents = currentInput.map(item => ({
                 role: item.role === 'assistant' ? 'model' : 'user',
                 parts: [{ text: item.content }]
             }));
 
-            const response = await gemini.models.generateContent({
+            // Use automatic retry instead of a single Gemini request.
+            const response = await generateWithRetry({
                 model: GEMINI_MODEL,
                 contents: geminiContents,
                 config: {
@@ -830,7 +860,6 @@ async function startBot() {
     }
 
     try {
-        // Initialize Gemini before logging into Discord.
         if (GEMINI_API_KEY) {
             const { GoogleGenAI } = await import('@google/genai');
             gemini = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
