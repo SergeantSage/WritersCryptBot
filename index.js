@@ -14,8 +14,6 @@ const {
     Events
 } = require('discord.js');
 
-const OpenAI = require('openai');
-
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
@@ -38,12 +36,11 @@ const WELCOME_CHANNEL_ID = process.env.WELCOME_CHANNEL_ID;
 const WELCOME_BANNER_URL = process.env.WELCOME_BANNER_URL;
 
 const CHAT_CHANNEL_ID = process.env.CHAT_CHANNEL_ID;
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-5.5';
 
-const openai = OPENAI_API_KEY
-    ? new OpenAI({ apiKey: OPENAI_API_KEY })
-    : null;
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
+
+let gemini = null;
 
 const REMINDER_FILE = path.join(__dirname, 'bump-reminders.json');
 
@@ -66,7 +63,7 @@ function saveReminders() {
 }
 
 // ================================
-// GISelle AI CHAT SETTINGS
+// GISELLE AI CHAT SETTINGS
 // ================================
 
 const chatHistories = new Map();
@@ -212,7 +209,7 @@ function splitMessage(text, maxLength = 1900) {
 }
 
 // ================================
-// AI CHAT SYSTEM
+// AI CHAT SYSTEM - GOOGLE GEMINI
 // ================================
 
 async function sendGiselleReply(message, responseText) {
@@ -259,8 +256,8 @@ client.on(Events.MessageCreate, async message => {
         // Only respond to messages inside a server.
         if (!message.guild) return;
 
-        if (!openai) {
-            console.error('OPENAI_API_KEY is missing!');
+        if (!gemini) {
+            console.error('GEMINI_API_KEY is missing or Gemini client is not initialized!');
             return;
         }
 
@@ -317,17 +314,25 @@ client.on(Events.MessageCreate, async message => {
                 }
             ];
 
-            const response = await openai.responses.create({
-                model: OPENAI_MODEL,
-                instructions: GISELLE_PERSONALITY,
-                input: currentInput,
-                max_output_tokens: 500
+            // Convert conversation history to Gemini format.
+            const geminiContents = currentInput.map(item => ({
+                role: item.role === 'assistant' ? 'model' : 'user',
+                parts: [{ text: item.content }]
+            }));
+
+            const response = await gemini.models.generateContent({
+                model: GEMINI_MODEL,
+                contents: geminiContents,
+                config: {
+                    systemInstruction: GISELLE_PERSONALITY,
+                    maxOutputTokens: 500
+                }
             });
 
-            const answer = response.output_text?.trim();
+            const answer = response.text?.trim();
 
             if (!answer) {
-                throw new Error('OpenAI returned an empty response.');
+                throw new Error('Gemini returned an empty response.');
             }
 
             // Save the conversation separately for each member.
@@ -568,11 +573,11 @@ client.once(Events.ClientReady, readyClient => {
     console.log('Bump reminder system loaded!');
     console.log('Welcome system loaded!');
 
-    if (openai && CHAT_CHANNEL_ID) {
-        console.log('Giselle AI chat system loaded!');
+    if (gemini && CHAT_CHANNEL_ID) {
+        console.log(`Giselle AI chat system loaded with ${GEMINI_MODEL}!`);
     } else {
         console.warn(
-            'Giselle AI chat is disabled. Check OPENAI_API_KEY and CHAT_CHANNEL_ID in Railway Variables.'
+            'Giselle AI chat is disabled. Check GEMINI_API_KEY and CHAT_CHANNEL_ID in Railway Variables.'
         );
     }
 });
@@ -825,6 +830,15 @@ async function startBot() {
     }
 
     try {
+        // Initialize Gemini before logging into Discord.
+        if (GEMINI_API_KEY) {
+            const { GoogleGenAI } = await import('@google/genai');
+            gemini = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+            console.log(`Gemini client initialized (${GEMINI_MODEL}).`);
+        } else {
+            console.warn('GEMINI_API_KEY is missing. Giselle AI chat will be disabled.');
+        }
+
         const rest = new REST({ version: '10' })
             .setToken(process.env.DISCORD_TOKEN);
 
